@@ -1,6 +1,6 @@
 MineSweeperCell {
 
-	var <x, <y, <>isBomb, <visible, <>marked, <neighbourCount, <>uncoverAction, <>bombClickAction, neighbours;
+	var <x, <y, <>isBomb, <visible, <>marked, <neighbourCount, <>uncoverAction, <>bombClickAction, neighbours, <>finishedMoveAction;
 
 	*new {|x, y, isBomb=false|
 		^super.newCopyArgs(x, y, isBomb, false, false); //not visible, not marked
@@ -49,24 +49,29 @@ MineSweeperCell {
 		//"signalled change".postln;
 		//[x, y, this].postln;
 		//neighbours.postln;
+		(isBomb.not && (neighbourCount == 0)).if({
 		neighbours.do({|n|
 			//"loop".postln;
-			(isBomb.not && (neighbourCount == 0)).if({
+			//(isBomb.not && (neighbourCount == 0)).if({
 
 				n.uncover
 			})
 		});
 		//});
+
+		finishedMoveAction.value(this);
 	}
 
 	uncover {
+		//[x,y].postln;
 		// not a click
 		(visible.not && isBomb.not).if({
 			visible = true;
 			this.changed;
+			(neighbourCount == 0).if({
 			neighbours.do({|n|
 				//"uncover loop".postln;
-				(isBomb.not && (neighbourCount == 0)).if({
+				//(isBomb.not && (neighbourCount == 0)).if({
 					n.uncover
 				})
 
@@ -91,6 +96,8 @@ MineSweeperCell {
 	}
 
 	evolve { // Game of Life support  // isBomb = isAlive
+		var zeroNeighbour = false;
+
 		visible.if({
 			marked.if({
 				isBomb.not.if({
@@ -99,6 +106,14 @@ MineSweeperCell {
 			});
 			isBomb.if({
 				marked = true;
+			}, {
+				neighbours.do({|n|
+					zeroNeighbour = (zeroNeighbour || (n.neighbourCount ==0 ));
+				});
+
+				zeroNeighbour.if({
+					this.uncover;
+				})
 			});
 		});
 		this.changed;
@@ -115,7 +130,7 @@ MineSweeperCell {
 
 MineSweeper {
 
-	var cells, <>uncoverAction, <>bombClickAction;
+	var cells, <>uncoverAction, <>bombClickAction, <>finishedMoveAction;
 
 	*new{| x, y, bombs|
 		^super.new.init(x, y, bombs);
@@ -130,6 +145,7 @@ MineSweeper {
 			cell.uncoverAction_({|cell| this.uncover(cell) });
 			cell.bombClickAction_({|cell| this.bombClick(cell)});
 			cell.addDependant(this);
+			cell.finishedMoveAction_({|cell| this.finishedMove(cell)});
 		});
 
 		{bombs > 0}.while({
@@ -203,6 +219,10 @@ MineSweeper {
 
 	bombClick{|cell|
 		bombClickAction.value(cell);
+	}
+
+	finishedMove{|cell|
+		finishedMoveAction.value(this, cell);
 	}
 
 	asString {
@@ -690,13 +710,13 @@ MineSweeperGui : View {
 
 MineSweeperSonify {
 
-	var <game, diamond, dict, action, <>baseFreq, <>ampScale, semaphore;
+	var <game, diamond, playing, changed_cells, action, <>baseFreq, <>ampScale, semaphore, group, task, <running;
 
-	*new {|gameClass, x, y, bombs|
-		^super.new.init(gameClass,x, y, bombs);
+	*new {|gameClass, x, y, bombs, group|
+		^super.new.init(gameClass,x, y, bombs, group);
 	}
 
-	init {|gameClass = \MineSweeper,x ,y ,bombs|
+	init {|gameClass = \MineSweeper,x ,y ,bombs, grp|
 
 
 		game = gameClass.asClass;
@@ -704,60 +724,89 @@ MineSweeperSonify {
 		diamond = Diamond.size(x.min(y));
 
 		baseFreq=330;
-		ampScale = ((1/(x*y))/4);
+		ampScale = ((1/(x*y))/1) *1.2;  // /2 was quiet, so *1.2
 
-		dict = Dictionary.new;
+		playing = Dictionary.new;
+		changed_cells=[];
+		running = false;
 
 		semaphore = Semaphore.new;
-
+		/*
 		action = {|cell|
 
-			var syn, amp, set;
+		var syn, amp, set;
 
 
-			set = {
-				{
-					0.0.rrand(0.1).wait;
-					semaphore.wait;
-					amp = this.amp(ampScale,cell.neighbourCount,cell.visible);
-					dict[cell].isNil.if({
-						dict.put(cell, [amp,
-							Synth(\sin, [\freq, baseFreq*diamond.getInterval(cell.x,cell.y), \amp, amp]);
-						]);
-					}, {
-						dict[cell][0] = amp;
-						dict[cell][1].set(\amp, amp);
-					});
-					semaphore.signal;
-				}.fork
-			};
-
-
-			amp = this.amp(ampScale,cell.neighbourCount,cell.visible);
-			dict[cell].isNil.if({
-
-				set.value;
-			}, {
-				(dict[cell][0] != amp).if({
-					set.value;
-
-				});
-			});
-
-
+		set = {
+		{
+		0.0.rrand(0.1).wait;
+		semaphore.wait;
+		amp = this.amp(ampScale,cell.neighbourCount,cell.visible);
+		dict[cell].isNil.if({
+		dict.put(cell, [amp,
+		Synth(\sin, [\freq, baseFreq*diamond.getInterval(cell.x,cell.y), \amp, amp]);
+		]);
+		}, {
+		dict[cell][0] = amp;
+		dict[cell][1].set(\amp, amp);
+		});
+		semaphore.signal;
+		}.fork
 		};
 
 
+		amp = this.amp(ampScale,cell.neighbourCount,cell.visible);
+		dict[cell].isNil.if({
+
+		set.value;
+		}, {
+		(dict[cell][0] != amp).if({
+		set.value;
+
+		});
+		});
+
+
+		};
+		*/
+
+		action = {|cell|
+
+			//changed_cells.includes(cell).not.if({
+				//"add".postln;
+			(cell.visible || cell.marked).if({
+				AppClock.sched(0.rrand(0.1), {
+
+					semaphore.wait;
+
+					changed_cells.includes(cell).not.if({
+						changed_cells = changed_cells ++ cell;
+					});
+					//"added".postln;
+					semaphore.signal;
+					nil;
+				});//.fork;
+			})
+			//});
+		};
+
 		game.uncoverAction = {|cell|
+			//"uncover action".postln;
 			cell.addDependant(this);
 			action.(cell);
 		};
 
 		game.addDependant(this);
+
+		//game.finishedMoveAction = {
+		//	this.start
+		//}
+
+		this.start;
 	}
 
-	amp { |scale, neighbours, visible|
-		visible.not.if({
+	amp { |scale, neighbours, visible, bomb|
+		(visible.not || bomb).if({
 			^0
 		}, {
 			^(scale * neighbours)
@@ -765,6 +814,7 @@ MineSweeperSonify {
 	}
 
 	update {|changed, changer|
+		//"update".postln;
 		changed.isKindOf(MineSweeperCell).if({
 			action.(changed);
 		}, {
@@ -775,12 +825,115 @@ MineSweeperSonify {
 		});
 	}
 
-	stopAll {
 
-		dict.do({|syn|
-			syn[1].set(\gate, 0)
-		})
+	start {
+		running.not.if({
+			running = true;
+
+			task = Task({
+				var cell, amp, syn, thresh = 0.0004,count = 0, clear = true;
+
+				{running}.while({
+					//"% to analyse".format(changed_cells.size).postln;
+
+					group.notNil.if({
+						group.server.sync;
+					}, {
+						0.001.rrand(0.01).wait;
+					});
+
+					semaphore.wait;
+					cell = changed_cells.pop;
+					semaphore.signal;
+
+					cell.notNil.if({
+						clear.if({
+							"processing queue".postln;
+						});
+						clear = false;
+						amp = this.amp(ampScale,cell.neighbourCount,cell.visible, cell.isBomb);
+						//amp.postln;
+						playing[cell].isNil.if({
+							(amp >= thresh).if({
+								playing.put(cell, [amp,
+									Synth(\sin, [\freq, baseFreq*diamond.getInterval(cell.x,cell.y),
+										\amp, amp,
+										\pan, -0.8.rrand(0.8)
+									], group);
+								]);
+								0.001.rrand(0.2).wait;
+								//count = count+1;
+								//0.001.rrand(0.2).wait;
+							});
+						}, {
+							(amp >= thresh).if({
+								playing[cell][0]=amp;
+								playing[cell][1].set(\amp, amp);
+								0.001.rrand(0.01).wait;
+							},{
+								syn = playing.removeAt(cell)[1];
+								syn.set(\gate, 0);
+								////0.01.rrand(0.1).wait;
+							})
+						})
+					}, { //nil cell
+						clear.not.if({
+							"cleared queue".postln;
+							clear = true;
+						});
+						0.1.wait
+					});
+				});
+
+				//changed_cells=[];
+				/*
+				new_amps.keysValuesDo({|key, value|
+				playing[key].isNil.if({ // no synth
+				(value >= 0.001).if({
+				playing.put(key, [value, nil
+				//test without sound
+				//Synth(\sin, [\freq, baseFreq*diamond.getInterval(cell.x,cell.y), \amp, value], group);
+				]);
+				count = count +1;
+				});
+				}, {
+				(playing[key][0] != value).if({
+
+				(value >= 0.001).if({ // loud enough to keep alive
+				playing[key][0] = value;
+				//test without sound
+				//playing[key][1].set(\amp, value);
+				}, {
+				syn = playing.removeAt(key)[1]; // or too quiet -> kill it
+				// test without sound
+				//syn.set(\gate, 0);
+				});
+				})
+				});
+				});
+				new_amps = Dictionary.new;
+				*/
+				//semaphore.signal;
+				//"echo finished sinished_round. started % synths".format(count).postln;//runInTerminal;
+
+			});
+			task.play
+		});
+
 	}
 
+	stop {
+		{
+			running = false;
+			semaphore.wait;
+			playing.do({|syn|
+				syn[1].set(\gate, 0)
+			});
+			playing = Dictionary.new;
+			semaphore.signal;
+		}.fork
+	}
+
+	stopAll{ this.stop }
 
 }
