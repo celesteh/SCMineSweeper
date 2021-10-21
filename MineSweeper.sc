@@ -3,7 +3,12 @@ MineSweeperCell {
 	var <x, <y, <>isBomb, <visible, <>marked, <neighbourCount, <>uncoverAction, <>bombClickAction, neighbours, <>finishedMoveAction;
 
 	*new {|x, y, isBomb=false|
-		^super.newCopyArgs(x, y, isBomb, false, false); //not visible, not marked
+		^super.newCopyArgs(x, y, isBomb, false, false).init(); //not visible, not marked
+	}
+
+	init {
+		neighbourCount = 0;
+		//neighbours = parent.getNeighbours(x, y);
 	}
 
 
@@ -217,6 +222,33 @@ MineSweeper {
 			})
 		});
 	}
+
+	visible {
+		var visible_cells;
+		visible_cells=[];
+		cells.do({|rows|
+			rows.do({|cell|
+				cell.visible.if({
+					visible_cells = visible_cells.add(cell);
+				})
+			})
+		});
+		^visible_cells;
+	}
+
+	marked {
+		var marked_cells;
+		marked_cells=[];
+		cells.do({|rows|
+			rows.do({|cell|
+				cell.marked.if({
+					marked_cells = marked_cells.add(cell);
+				})
+			})
+		});
+		^marked_cells;
+	}
+
 
 	uncover{|cell|
 		uncoverAction.value(cell);
@@ -720,75 +752,204 @@ MineSweeperGui : View {
 }
 
 MineSweeperSonify {
+	var <game, >action, <>is_running, <semaphore, >start_action, >stop_action;
 
-	var <game, diamond, playing, changed_cells, action, <>baseFreq, <>ampScale, semaphore, group, task, <running;
-
-	*new {|gameClass, x, y, bombs, group|
-		^super.new.init(gameClass,x, y, bombs, group);
+	*new {|gameClass, x, y, bombs|
+		^super.new.init(gameClass,x, y, bombs);
 	}
 
-	init {|gameClass = \MineSweeper,x ,y ,bombs, grp|
+	init {|gameClass = \MineSweeper,x ,y ,bombs|
 
 
 		game = gameClass.asClass;
 		game = game.new(x,y,bombs);
-		diamond = Diamond.size(x.min(y));
+
+		semaphore = Semaphore.new;
+
+		is_running = false;
+
+		game.uncoverAction = {|cell|
+			//"uncover action".postln;
+			cell.addDependant(this);
+			this.update(cell);
+		};
+
+		game.addDependant(this);
+
+	}
+
+	update {|changed, changer|
+
+		var cell;
+
+
+		//"updateSon".postln;
+
+
+		changed.isKindOf(MineSweeperCell).if({
+			cell = changed;
+		}, {
+			changer.isKindOf(MineSweeperCell).if({
+				cell = changer;
+			});
+		});
+
+		(cell.notNil && action.notNil).if({
+			action.(cell, this);
+		});
+	}
+
+	start {|...arr|
+		start_action.notNil.if({
+			start_action.(*arr);
+		});
+	}
+
+	stop {|...arr|
+		stop_action.notNil.if({
+			stop_action.(*arr);
+		});
+	}
+}
+
+
+MineSweeperTuningDiamond : MineSweeperSonify {
+
+	var diamond, playing, changed_cells, <>baseFreq, <>ampScale, group, task, synth, subgroup,
+	last_update;
+
+	*new {|gameClass, x, y, bombs, group|
+		^super.new(gameClass,x, y, bombs).initTD(x,y, bombs, group);
+	}
+
+	initTD {|x, y, bombs, grp|
+
+		var size, finishedMoveAction;
+
+		"init".postln;
+
+		size = x.max(y);
+
+		////game = gameClass.asClass;
+		////game = game.new(x,y,bombs);
+		diamond = Diamond.size(size);
+		////(gameClass + " class").postln;
+
+		////super.init(gameClass,x ,y ,bombs);
+		////this.superPerform(\init, gameClass,x ,y ,bombs);
 
 		baseFreq=330;
 		ampScale = 1/(bombs); //((1/(x*y))/1) *1.2;  // /2 was quiet, so *1.2
 
-		//playing = Dictionary.new;
-		playing = Array.newClear(x);
+		////playing = Dictionary.new;
+		playing = Dictionary.new;//Array.newClear(size.asInteger);
 		changed_cells=[];
-		running = false;
-
-		semaphore = Semaphore.new;
-		/*
-		action = {|cell|
-
-		var syn, amp, set;
+		is_running = false;
 
 
-		set = {
-		{
-		0.0.rrand(0.1).wait;
-		semaphore.wait;
-		amp = this.amp(ampScale,cell.neighbourCount,cell.visible);
-		dict[cell].isNil.if({
-		dict.put(cell, [amp,
-		Synth(\sin, [\freq, baseFreq*diamond.getInterval(cell.x,cell.y), \amp, amp]);
-		]);
-		}, {
-		dict[cell][0] = amp;
-		dict[cell][1].set(\amp, amp);
-		});
-		semaphore.signal;
-		}.fork
-		};
+
+		finishedMoveAction = {|game/*, cell*/|
+
+			var amp, name, count, ratio, existing, actionable, cellShouldPlay, neighbours, cells;
 
 
-		amp = this.amp(ampScale,cell.neighbourCount,cell.visible);
-		dict[cell].isNil.if({
 
-		set.value;
-		}, {
-		(dict[cell][0] != amp).if({
-		set.value;
+			{
 
-		});
-		});
+			semaphore.wait;
+			playing = Dictionary.new;
 
-
-		};
-		*/
-
-		action = {|cell|
-
-			var amp, name;
-
+				/*
 			//changed_cells.includes(cell).not.if({
 			//"add".postln;
-			(cell.visible || cell.marked).if({
+			cellShouldPlay = true;
+			neighbours = cell.neighbourCount;
+			neighbours.isKindOf(SimpleNumber).not.if({ // uninitialised
+				//neighbours = 0;
+				cellShouldPlay = false;
+			});
+
+			// if the cell is initialised in a way that makes sense
+			// AND it's marked or visible
+			// AND it's a bomb or has a number on it
+			// Then it's a cell we should play
+
+
+			cellShouldPlay = cellShouldPlay && ((cell.visible || cell.marked) &&
+				(cell.isBomb || (neighbours > 0) ));
+
+				*/
+			actionable = true;  // are we going to take action?
+
+				cells = [game.visible(), game.marked()].flatten;
+
+				("visible or marked cells" + cells.size).postln;
+
+				cells.do({|cell|
+
+				cellShouldPlay = true;
+				neighbours = cell.neighbourCount;
+			neighbours.isKindOf(SimpleNumber).not.if({ // uninitialised
+				//neighbours = 0;
+				cellShouldPlay = false;
+			});
+				cellShouldPlay = cellShouldPlay && (cell.isBomb || (neighbours > 0) );
+
+
+				ratio = diamond.getInterval(cell.x, cell.y);
+				existing = playing[ratio];
+
+				(cellShouldPlay).if({
+					actionable = true; // we can see the cell
+				} , {
+					existing.notNil.if({
+						actionable = (existing >= 0.001); // it's playing right now already
+					});
+				});
+
+
+				//"actionable".postln;
+
+				amp = this.amp(ampScale,cell.neighbourCount,cell.visible, cell.isBomb);
+				//amp.postln;
+
+				existing = playing[ratio];
+				existing.isNil.if({
+					existing = 0;
+				});
+
+				(cellShouldPlay).if({
+					amp = amp + existing;
+				} , {
+					amp = (existing - amp).max(0); // always be 0 or bigger
+				});
+
+				playing[ratio] = amp;
+
+			});
+
+			semaphore.signal; // this is a producer
+
+				is_running.if({
+					//{
+						semaphore.wait;
+						//name = this.pr_argName(ratio);
+						//synth.set(name.asSymbol, amp);
+						subgroup.set(\gate, 0);
+						//srv.wait;
+						subgroup.server.sync;
+
+						this.pr_playSynth;
+						0.1.wait;
+						semaphore.signal;
+					//}.fork;
+				});
+
+				"finished finishedMoveAction".postln;
+
+			}.fork;
+
+			//(cell.visible || cell.marked).if({
 				/*
 				AppClock.sched(0.rrand(0.1), {
 
@@ -802,29 +963,139 @@ MineSweeperSonify {
 					nil;
 				});//.fork;
 				*/
-				(running && playing[cell.x].notNil).if ({
-					amp = this.amp(ampScale,cell.neighbourCount,cell.visible, cell.isBomb);
-					name = this.pr_argName(cell.y);
-					playing[cell.x].set(name.asSymbol, amp*8); // * 15
-				});
-			})
+				//(is_running && playing[cell.x].notNil).if ({
+				//	amp = this.amp(ampScale,cell.neighbourCount,cell.visible, cell.isBomb);
+				//	name = this.pr_argName(cell.y);
+				//	playing[cell.x].set(name.asSymbol, amp*8); // * 15
+				//});
+
+
+
+			//})
 			//});
 		};
 
-		game.uncoverAction = {|cell|
-			//"uncover action".postln;
-			cell.addDependant(this);
-			action.(cell);
+
+		start_action =  {
+
+			var def;
+
+			"starting".postln;
+
+			this.is_running.not.if({
+				this.is_running = true;
+
+				task = Task({
+					var cells, amp, syn, srv, thresh = 0.0004,count = 0, clear = false, modified_cells, wait;
+
+					modified_cells = [];
+
+					group.notNil.if({
+						srv = group.server;
+					}, {
+						srv = Server.default;
+					});
+
+					srv.waitForBoot({
+
+						wait = 20;
+
+						group.isNil.if({
+							group = ParGroup(srv);
+						});
+						srv.sync;
+						subgroup = ParGroup(group);
+
+						// make synthdef
+						this.pr_makeSynthDef().do({|def|
+							srv.sync;
+							//def.postln;
+							def = def.interpret;
+							////def.add(srv);
+							def.send(srv);
+							////1.wait;
+						});
+						srv.sync;
+						//playing = playing.size.collect({|x| Synth("MineSweeper"++x);});
+						//synth = Synth("MineSweeper");
+						this.pr_playSynth;
+
+						inf.do({
+							wait.wait;
+							// make synthdef
+							this.pr_makeSynthDef().do({|def|
+								srv.sync;
+								//def.postln;
+								def = def.interpret;
+								//def.add(srv);
+								semaphore.wait;
+								def.send(srv);
+								semaphore.signal;
+
+								//playing[i].set(\gate, 0);
+								//playing[i] = Synth("MineSweeper"++i);
+								//("MineSweeper"++i).postln;
+								//synth.set(\gate, 0);
+								//synth = Synth("MineSweeper");
+
+							});
+							//wait.wait;
+							semaphore.wait;
+							(Date.getDate.rawSeconds - last_update.rawSeconds > 4).if ({
+								srv.sync;
+								subgroup.set(\gate, 0);
+								srv.sync;
+								this.pr_playSynth;
+							});
+							semaphore.signal;
+						});
+					});
+				});
+				task.play;
+
+				// do some auditing
+				{
+					inf.do({
+						40.wait;
+						finishedMoveAction.(game);
+					});
+				}.fork;
+			});
+
 		};
 
-		game.addDependant(this);
-
-		//game.finishedMoveAction = {
-		//	this.start
-		//}
-
 		this.start;
+		game.finishedMoveAction = finishedMoveAction;
+
+
+		stop_action = {
+			{
+				is_running = false;
+				task.stop;
+				semaphore.wait;
+				//playing.do({|syn|
+				//	syn[1].set(\gate, 0)
+				//});
+				//playing = Dictionary.new;
+				//playing = playing.collect({|syn|
+					synth.set(\gate, 0);
+				//	nil;
+				//});
+				semaphore.signal;
+				group.notNil.if({
+					group.set(\gate, 0)
+				});
+				2.wait;
+				group.notNil.if({
+					group.freeAll
+				});
+
+			}.fork
+		};
+
+		"end init".postln;
 	}
+
 
 	amp { |scale, neighbours, visible, bomb|
 		(visible.not || bomb).if({
@@ -834,72 +1105,262 @@ MineSweeperSonify {
 		});
 	}
 
-	pr_argName{|x|
-		^"a" ++ x.asString.padLeft(3, "0");
+	pr_argName{|x, size=7|
+		^"a" ++ x.asString[0..(size-1)].padLeft(size, "0").replace(".", "_");
 	}
 
-	update {|changed, changer|
-		//"update".postln;
-		changed.isKindOf(MineSweeperCell).if({
-			action.(changed);
+	pr_playSynth{
+
+		var actuallyPlaying, synthargs, size, keys, srv, letter, subkeys, amp, wait;
+
+		"pr_playSynth".postln;
+
+		actuallyPlaying = playing.select({|amp| amp.abs > 0.001}); // -60 db
+		keys = actuallyPlaying.keys.asArray;
+		keys.postln;
+		keys.size.postln;
+
+		wait = 0;
+
+		group.notNil.if({
+			srv = group.server;
 		}, {
-			//this.stopAll;
-			changer.isKindOf(MineSweeperCell).if({
-				action.(changer);
+			srv = Server.default;
+			group = ParGroup(srv);
+			{srv.sync;}.try;
+			subgroup = ParGroup(group);
+		});
+
+		amp = 4 * (keys.size / 150).ceil.reciprocal;
+
+		{keys.size > 0}.while ({
+
+			{wait.wait}.try;
+
+			subkeys = keys[0..23];
+
+			synthargs = subkeys.collect({|ratio, index|
+				keys.removeAt(0); // keep knocking down the array
+				[
+					("r"++index).asSymbol, ratio,
+					("a"++index).asSymbol, actuallyPlaying.at(ratio);
+				]
 			});
+
+			size = subkeys.size;
+			//synthargs = synthargs.add([("r"++size).asSymbol, 1, ("a"++size).asSymbol, 0]);
+			synthargs = synthargs.add([\amp, amp]);
+			synthargs = synthargs.flat;
+
+			synthargs.postln;
+			((synthargs.size/4)-1).postln;
+
+
+			{srv.sync}.try; // Threading
+			{0.0001.rrand(0.1).wait;}.try;
+
+			letter = $a.asInteger + 5.rand;
+
+			synth = Synth("MineSweeper"++size++letter.asAscii.asString, synthargs, subgroup);
+			last_update = Date.getDate();
+
+			wait = wait + 0.001.rrand(0.01);
 		});
 	}
 
 
-	pr_makeSynthDef {
+	pr_makeSynthDef{|freq = 300|
 
-		var argList, sinList, string, sds;
+		var actuallyPlaying, base, min, defs, letter;
+		base = freq * 2.pow(-1);
 
-		sds = diamond.identities.size.collect({|x|
-			argList = diamond.identities.size.collect({|y| this.pr_argName(y) });
-		//argList = argList.flatten;
+		actuallyPlaying = playing.select({|amp| amp.abs > 0.001}); // -60 db
+
+		min = actuallyPlaying.size.max(1);
+		//defs = (min..(min+10)).collect({|i|
 
 
-			string = "SynthDef(\\MineSweeper"++x++", { arg gate=1, out=0, freq=330," + argList.join("=0, ") ++ """;
+		defs = 5.collect ({|i|
+			letter = ($a.asInteger + i).asAscii.asString;
+			25.collect({|j|
+				this.pr_makeSynthDefSize((j+1), base, freq * 2.pow(i-1), letter);
+			});
+		});
+
+		/*
+		ratios = actuallyPlaying.keys.asArray;
+
+		sinList = "";
+		argList = ratios.collect({|rat, index|
+
+			rvar = "r"++index;
+			avar = "a"++index;
+
+			sinList = sinList.add ("SinOsc.ar(freq * %, 0, %) * LagUD.kr(%/2, %*2, 3) * LFPulse.kr(% * 2.pow(-3.rrand(3)), 0, %) * AmpComp.ir(% * freq, %) ".format(
+				rvar,
+				avar, // name of amplitude variable
+				rvar, // up lag
+				rvar, // down lag
+				rvar , // pulse rate based on fracting in random octave
+		        0.2.rrand(0.6), // pulse width is random
+				rvar,
+				base//, // Fletcher Munson
+			));
+
+			rvar + "=1," + avar + "=0";
+		});
+
+		string = "SynthDef(\\MineSweeper" ++ ratios.size ++ ", { arg gate=1, out=0, freq=%,".format(freq) + argList.join("=0,\n") ++ """;
 var env, sins, splay;
 env = EnvGen.kr(Env.asr(releaseTime:5), gate, doneAction:2);
 sins = [""";
 
+		string = string + sinList.join(", ");
+		string = string + "];\nsplay = Splay.ar(sins);\nOut.ar(out, splay.tanh * env);\n})";
+
+		//^string;
+		*/
+		^defs.flatten;
+	}
+
+	pr_makeSynthDefSize{|size, base, freq, id|
+
+		var rvar, avar, sinList, argList, string, divisions;
+
+
+
+		sinList = [];
+
+		argList = size.collect({|index|
+			rvar = "r"++index;
+			avar = "a"++index;
+
+			sinList = sinList.add ("SinOsc.ar(freq * %, 0, %) * LagUD.kr(%/2, %*2, 3) * LFPulse.kr(% * 2.pow(-3.rrand(3)), 0, %)  /* * AmpComp.ir(% * freq, %)*/ ".format(
+				rvar,
+				avar, // name of amplitude variable
+				rvar, // up lag
+				rvar, // down lag
+				rvar , // pulse rate based on fracting in random octave
+		        0.2.rrand(0.6), // pulse width is random
+				rvar,
+				base//, // Fletcher Munson
+			));
+
+			rvar + "=1," + avar + "=0";
+		});
+
+		string = "SynthDef(\\MineSweeper" ++ size ++ id ++", { arg gate=1, out=0, amp=1, freq=%,".format(freq) + argList.join(",\n") ++ """;
+var env, sins, splay;
+env = EnvGen.kr(Env.asr(releaseTime:2.0.rrand(5)), gate, doneAction:2);
+sins = [""";
+
+		string = string + sinList.join(", ");
+		string = string + """];
+splay = Splay.ar(sins) * amp;
+Out.ar(out, splay.tanh * env);
+})""";
+
+
+		^string;
+	}
+
+
+	pr_makeSynthDefOld {|count|
+
+		var argList, sinList, string, sds, base, freq=330, dedup, ratio;
+
+		base = freq * 2.pow(-1);
+
+		//sds = diamond.identities.size.collect({|x|
+		//	argList = diamond.identities.size.collect({|y| this.pr_argName(y) });
+		//argList = argList.flatten;
+
+
+		//	string = "SynthDef(\\MineSweeper"++x++", { arg gate=1, out=0, freq=%,".format(freq) + argList.join("=0, ") ++ """;
+//var env, sins, splay;
+//env = EnvGen.kr(Env.asr(releaseTime:5), gate, doneAction:2);
+//sins = [""";
+
 		//sinList = diamond.identities.size.collect({|x| diamond.identities.size.collect({|y|
-		sinList = argList.collect({ |name|
-			var y, fraction;
-			//name = this.pr_argName(x, y);
-			y = name[1..3].asInt;
-			//y = name[4..6].asInt;
-			fraction = diamond.getInterval(x, y);
-				"SinOsc.ar(freq * %, 0, LagUD.kr(%, %, 3) * LFPulse.kr(%, 0, %))".format(
-					fraction * 2.pow((x%10)-2), // fraction adjust by octave based on postiion
-					name, // name of amplitude variable
-					fraction/2, // up lag
-					fraction * 2.pow(-3.rrand(3)), // pulse rate based on fracting in random octave
-					0.2.rrand(0.6)); // pulse width is random
-		});//});
+		//sinList = argList.collect({ |name|
+		//	var y, fraction, sfrq, comp;
+		//	//name = this.pr_argName(x, y);
+		//	y = name[1..3].asInteger;
+		//	//y = name[4..6].asInt;
+		//	fraction = diamond.getInterval(x, y);
+		//		//sfrq = freq * fraction * 2.pow((x%10)-3); // fraction adjust by octave based on postiion
+		//		sfrq = freq * fraction * 2.pow(x.div(8)-1); // was 10
+		//		//compensationFactor = (root / freq) ** exp
+		//		comp = (base / sfrq) ** (1/3);
+		//		"SinOsc.ar(%, 0, %) * LagUD.kr(%, %, 3) * LFPulse.kr(%, 0, %) /* AmpComp.ir(%, %)*/ ".format(
+		//			sfrq, // freq * fract * octave
+		//			comp, // amp compensation factor
+		//			name, // name of amplitude variable
+		//			fraction/2, // up lag
+		//			fraction * 2.pow(-3.rrand(3)), // pulse rate based on fracting in random octave
+		//			0.2.rrand(0.6), // pulse width is random
+		//			sfrq,
+		//			base//, // Fletcher Munson
+		//			//comp
+		//		);
+		//});//});
 		//sinList = sinList.flatten;
 
 
 
-		string = string + sinList.join(", ");
-			string = string + "];\nsplay = Splay.ar(sins) * SinOsc.kr(% * SinOsc.kr(%, 0, 0.1,0.95), %, 0.5, 0.4);\n".format(
-				20.0.rrand(50).reciprocal, // rate
-				5.0.rrand(20).reciprocal,
-				0.0.rrand(2pi));// phase
-			string = string ++ """Out.ar(out, splay.tanh * env);
-});
-""";
-		string.postln;
-		string;
+		//string = string + sinList.join(", ");
+		//	string = string + "];\nsplay = Splay.ar(sins) * SinOsc.kr(% * SinOsc.kr(%, 0, 0.1,0.95), %, 0.5, 0.4);\n".format(
+		//		20.0.rrand(50).reciprocal, // rate
+		//		5.0.rrand(20).reciprocal,
+		//		0.0.rrand(2pi));// phase
+		//	string = string ++ """Out.ar(out, splay.tanh * env);
+//});
+//""";
+		////string.postln;
+		//string;
+		//});
+
+		//^sds
+		dedup = Dictionary.new;
+
+		diamond.identities.size.do({|x|
+			diamond.identities.size.do({|y|
+				ratio = diamond.getInterval(x,y);
+				dedup.put(this.pr_argName(ratio), ratio);
+			})
 		});
 
-		^sds
 
+
+		argList = dedup.keys.asArray;
+		"num sines is %".format(argList.size).postln;
+
+		string = "SynthDef(\\MineSweeper, { arg gate=1, out=0, freq=%,".format(freq) + argList.join("=0,\n") ++ """;
+var env, sins, splay;
+env = EnvGen.kr(Env.asr(releaseTime:4.0.rrand(8)), gate, doneAction:2);
+sins = [""";
+		sinList = argList.collect({ |name|
+			ratio = dedup.at(name);
+			"SinOsc.ar(freq * %, 0, %) * LagUD.kr(%, %, 3) * LFPulse.kr(%, 0, %) * AmpComp.ir(%, %) ".format(
+				ratio,
+				name, // name of amplitude variable
+				ratio/2, // up lag
+				ratio *2, // down lag
+				ratio * 2.pow(-3.rrand(3)), // pulse rate based on fracting in random octave
+		        0.2.rrand(0.6), // pulse width is random
+				ratio * freq,
+				base//, // Fletcher Munson
+			);
+		});
+
+		string = string + sinList.join(", ");
+		string = string + "];\nsplay = Splay.ar(sins);\nOut.ar(out, splay.tanh * env);\n})";
+
+		^string;
 	}
 
 
+			/*
 	start {
 
 		var def;
@@ -908,7 +1369,7 @@ sins = [""";
 			running = true;
 
 			task = Task({
-				var cells, amp, syn, srv, thresh = 0.0004,count = 0, clear = false, modified_cells;
+				var cells, amp, syn, srv, thresh = 0.0004,count = 0, clear = false, modified_cells, wait;
 
 				modified_cells = [];
 
@@ -920,6 +1381,8 @@ sins = [""";
 
 				srv.waitForBoot({
 
+					wait = 10;
+
 					// make synthdef
 					this.pr_makeSynthDef().do({|def|
 						srv.sync;
@@ -929,6 +1392,24 @@ sins = [""";
 					});
 					srv.sync;
 					playing = playing.size.collect({|x| Synth("MineSweeper"++x);});
+
+
+					inf.do({
+						wait.wait;
+						// make synthdef
+						this.pr_makeSynthDef().do({|def, i|
+							srv.sync;
+							def = def.interpret;
+							//def.add(srv);
+							def.send(srv);
+							wait.wait;
+							playing[i].set(\gate, 0);
+							playing[i] = Synth("MineSweeper"++i);
+							("MineSweeper"++i).postln;
+						});
+						srv.sync;
+						//playing = playing.collect({|syn, x| wait.wait; syn.set(\gate, 0); Synth("MineSweeper"++x);});
+					});
 
 					/*
 
@@ -1052,6 +1533,7 @@ sins = [""";
 	stop {
 		{
 			running = false;
+			task.stop;
 			semaphore.wait;
 			//playing.do({|syn|
 			//	syn[1].set(\gate, 0)
@@ -1072,7 +1554,7 @@ sins = [""";
 
 		}.fork
 	}
-
+*/
 	stopAll{ this.stop }
 
 }

@@ -29,11 +29,25 @@ s.waitForBoot({
 
 	s.sync;
 
-	inst = MineSweeperSonify(\GameOfLifeSweeper, 40, 40, 300.rrand(199), group);
-	gui = inst.game.gui(nil,Rect(0,0,3000,2000));
-	gui.front;
-	gui.onClose = { inst.stopAll };
+	inst = MineSweeperTuningDiamond(\GameOfLifeSweeper, 40, 40, 300.rrand(199), group);
+	//inst = MineSweeperSonify(\GameOfLifeSweeper, 40, 40, 300.rrand(199));
+	//inst = GameOfLifeSweeper(40, 40, 300.rrand(199));
 
+
+	"Do gui".postln;
+	gui = inst.game.gui(nil,Window.screenBounds);
+	//gui = inst.gui(nil,Window.screenBounds);
+	gui.fullScreen;
+	gui.front;
+	gui.onClose = { inst.stop };
+
+	inst.pr_makeSynthDef().do({|def|
+		s.sync;
+		//def.postln;
+		def = def.interpret;
+		//def.add(srv);
+		def.load(s); // get ready for subsequent runs
+	});
 
 	s.meter;
 
